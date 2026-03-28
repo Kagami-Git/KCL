@@ -1,0 +1,39 @@
+template: |
+  ## Change Notes
+
+  $CHANGES
+
+  **Full Changelog**: https://github.com/Kagami-Git/KCL/compare/v$PREVIOUS_TAG...v$VERSION
+
+categories:
+  - title: Features
+    labels:
+      - feature
+      - enhancement
+  - title: Bug Fixes
+    labels:
+      - bug
+      - fix
+  - title: Other Changes
+    labels:
+      - chore
+      - refactor
+      - documentation
+
+version-resolver:
+  major:
+    labels:
+      - breaking-change
+  minor:
+    labels:
+      - feature
+      - enhancement
+  patch:
+    labels:
+      - bug
+      - fix
+      - chore
+      - refactor
+      - documentation
+
+change-template: '- $TITLE (#$NUMBER) @$AUTHOR'

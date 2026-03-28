@@ -2,14 +2,19 @@ name: Release
 
 on:
   workflow_dispatch:
-    inputs:
-      change_notes:
-        description: 'Change Notes'
-        required: true
-        type: string
 
 jobs:
+  update_release_draft:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: release-drafter/release-drafter@v6
+        with:
+          config-name: release-drafter.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   release:
+    needs: update_release_draft
     permissions:
       contents: write
     runs-on: windows-latest
@@ -51,6 +56,5 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: 'Kagami Craft Launcher v__VERSION__'
-          releaseBody: ${{ github.event.inputs.change_notes }}
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
