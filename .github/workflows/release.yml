@@ -3,8 +3,11 @@ name: Release
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  create_release:
+  release:
     runs-on: ubuntu-latest
     outputs:
       upload_url: ${{ steps.create_release.outputs.upload_url }}
@@ -31,13 +34,14 @@ jobs:
           prerelease: false
 
       - name: Generate Release Body
-        id: release_body
         uses: release-drafter/release-drafter@v6
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag-name: v${{ steps.get_version.outputs.version }}
 
   build-windows:
-    needs: create_release
+    needs: release
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -87,7 +91,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ needs.create_release.outputs.upload_url }}
+          upload_url: ${{ needs.release.outputs.upload_url }}
           asset_path: src-tauri/target/release/kagamicraftlauncher.exe
           asset_name: KagamiCraft_Launcher.exe
           asset_content_type: application/octet-stream
