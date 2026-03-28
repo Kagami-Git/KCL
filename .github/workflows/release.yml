@@ -28,9 +28,6 @@ jobs:
           node-version: "20"
           cache: pnpm
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-action@stable
-
       - name: Sync version to tauri.conf.json
         run: |
           $package = Get-Content package.json | ConvertFrom-Json
