@@ -2,6 +2,9 @@ name: Release
 
 on:
   workflow_dispatch:
+  #push:
+  #  tags:
+  #    - 'v*'
 
 permissions:
   contents: write
@@ -11,16 +14,11 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       upload_url: ${{ steps.create_release.outputs.upload_url }}
-      version: ${{ steps.get_version.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Get version
-        id: get_version
-        run: |
-          VERSION=$(cat package.json | grep '"version"' | sed 's/.*"version": "\(.*\)".*/\1/')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+        with:
+          fetch-depth: 0
 
       - name: Create Release
         id: create_release
@@ -28,8 +26,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: v${{ steps.get_version.outputs.version }}
-          release_name: Kagami Craft Launcher v${{ steps.get_version.outputs.version }}
+          tag_name: ${{ github.ref }}
+          release_name: Kagami Craft Launcher ${{ github.ref }}
           draft: true
           prerelease: false
 
@@ -38,9 +36,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag: v${{ steps.get_version.outputs.version }}
+          tag: ${{ github.ref }}
+          config-name: release-drafter.yml
 
-  build-windows:
+  build:
     needs: release
     runs-on: windows-latest
     steps:
@@ -73,8 +72,7 @@ jobs:
 
       - name: Sync version to tauri.conf.json
         run: |
-          $package = Get-Content package.json | ConvertFrom-Json
-          $version = $package.version
+          $version = "${{ github.ref_name }}".Replace("refs/tags/v", "")
           $tauri = Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json
           $tauri.version = $version
           $tauri | ConvertTo-Json -Depth 10 | Set-Content src-tauri/tauri.conf.json
