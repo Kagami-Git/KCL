@@ -18,8 +18,6 @@ src-tauri/target
 src-tauri/gen
 
 # IDE
-.vscode/*
-!.vscode/extensions.json
 .idea
 .DS_Store
 *.suo
@@ -27,6 +25,7 @@ src-tauri/gen
 *.njsproj
 *.sln
 *.sw?
+.trae
 
 # OS
 Thumbs.db
