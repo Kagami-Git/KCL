@@ -38,7 +38,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag-name: v${{ steps.get_version.outputs.version }}
+          tag: v${{ steps.get_version.outputs.version }}
 
   build-windows:
     needs: release
