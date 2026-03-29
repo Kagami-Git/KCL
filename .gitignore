@@ -26,6 +26,6 @@ src-tauri/gen
 *.sln
 *.sw?
 .trae
-
+.env
 # OS
 Thumbs.db
