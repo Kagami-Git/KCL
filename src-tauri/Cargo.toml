@@ -1,9 +1,9 @@
 [package]
 name = "KagamiLauncher"
-version = "0.0.2"
+version = "0.0.3"
 description = "Kagami Launcher - A Minecraft Launcher"
 authors = ["ImJingLan", "Kagami-Git"]
-edition = "2021"
+edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
