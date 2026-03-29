@@ -124,8 +124,8 @@ export default function HomePage() {
     }
   };
 
-  const avatarUrl = player?.uuid
-    ? `https://mc-heads.net/avatar/${player.uuid}`
+  const avatarUrl = player?.isOnline
+    ? `https://mc-heads.net/avatar/${player.username}/512`
     : defaultAvatar;
 
   const accounts = accountsData?.accounts || [];

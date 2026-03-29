@@ -6,11 +6,88 @@ use base64::Engine;
 use rand::{Rng, SeedableRng};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 use tauri::Manager;
+
+const MS_CLIENT_ID: &str = env!("MS_CLIENT_ID");
+const LOG_FILE: &str = "Log1.txt";
+
+#[allow(dead_code)]
+fn get_log_path() -> Result<PathBuf, String> {
+    let kcl_dir = ensure_kcl_dir()?;
+    Ok(kcl_dir.join(LOG_FILE))
+}
+
+#[allow(dead_code)]
+fn init_logger() {
+    if let Ok(log_path) = get_log_path() {
+        let timestamp = chrono_lite_timestamp();
+        let header = format!("=== Kagami Craft Launcher Log ===\nStarted at: {}\n{}\n\n", timestamp, "=".repeat(40));
+        if let Ok(mut file) = OpenOptions::new().write(true).create(true).open(&log_path) {
+            let _ = file.write_all(header.as_bytes());
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn chrono_lite_timestamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let duration = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let secs = duration.as_secs();
+    let hours = (secs / 3600) % 24;
+    let minutes = (secs / 60) % 60;
+    let seconds = secs % 60;
+    format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+}
+
+#[allow(dead_code)]
+fn log_to_file(level: &str, message: &str) {
+    if let Ok(log_path) = get_log_path() {
+        if let Ok(mut file) = OpenOptions::new().append(true).open(&log_path) {
+            let timestamp = chrono_lite_timestamp();
+            let _ = writeln!(file, "[{}] [{}] {}", timestamp, level, message);
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! log_info {
+    ($($arg:tt)*) => ({
+        let msg = format!($($arg)*);
+        log_to_file("INFO", &msg);
+        println!("[INFO] {}", msg);
+    });
+}
+
+#[macro_export]
+macro_rules! log_warn {
+    ($($arg:tt)*) => ({
+        let msg = format!($($arg)*);
+        log_to_file("WARN", &msg);
+        eprintln!("[WARN] {}", msg);
+    });
+}
+
+#[macro_export]
+macro_rules! log_error {
+    ($($arg:tt)*) => ({
+        let msg = format!($($arg)*);
+        log_to_file("ERROR", &msg);
+        eprintln!("[ERROR] {}", msg);
+    });
+}
+
+#[macro_export]
+macro_rules! log_debug {
+    ($($arg:tt)*) => ({
+        let msg = format!($($arg)*);
+        log_to_file("DEBUG", &msg);
+    });
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DeviceCodeInfo {
@@ -239,39 +316,7 @@ fn create_client() -> Client {
 }
 
 fn get_client_id() -> String {
-    if let Ok(id) = std::env::var("MS_CLIENT_ID") {
-        if !id.is_empty() {
-            return id;
-        }
-    }
-
-    let exe_dir = std::env::current_exe()
-        .map(|p| p.parent().unwrap_or_else(|| Path::new("")).to_path_buf())
-        .unwrap_or_else(|_| PathBuf::from("."));
-
-    let dot_dev = exe_dir.join(".env.dev");
-    if dot_dev.exists() {
-        if let Ok(content) = std::fs::read_to_string(&dot_dev) {
-            for line in content.lines() {
-                if let Some(value) = line.strip_prefix("MS_CLIENT_ID=") {
-                    return value.trim().to_string();
-                }
-            }
-        }
-    }
-
-    let dot_env = exe_dir.join(".env");
-    if dot_env.exists() {
-        if let Ok(content) = std::fs::read_to_string(&dot_env) {
-            for line in content.lines() {
-                if let Some(value) = line.strip_prefix("MS_CLIENT_ID=") {
-                    return value.trim().to_string();
-                }
-            }
-        }
-    }
-
-    "00000000-0000-0000-0000-000000000000".to_string()
+    std::env::var("MS_CLIENT_ID").unwrap_or_else(|_| MS_CLIENT_ID.to_string())
 }
 
 fn get_kcl_dir() -> Result<PathBuf, String> {
@@ -508,10 +553,12 @@ fn get_accounts() -> Result<AccountsData, String> {
 
 #[tauri::command]
 fn set_selected_account(key: String) -> Result<(), String> {
+    log_info!("Setting selected account: {}", key);
     let kcl_dir = get_kcl_dir()?;
     let accounts_path = kcl_dir.join(ACCOUNTS_FILE);
 
     if !accounts_path.exists() {
+        log_error!("set_selected_account failed: accounts file not found");
         return Err("没有找到账户文件".to_string());
     }
 
@@ -529,12 +576,15 @@ fn set_selected_account(key: String) -> Result<(), String> {
     fs::write(&accounts_path, content)
         .map_err(|e| format!("Failed to write accounts file: {}", e))?;
 
+    log_info!("Selected account changed successfully");
     Ok(())
 }
 
 #[tauri::command]
 fn add_offline_account(username: String) -> Result<(), String> {
+    log_info!("Adding offline account: {}", username);
     if username.trim().is_empty() {
+        log_error!("add_offline_account failed: empty username");
         return Err("用户名不能为空".to_string());
     }
 
@@ -558,11 +608,13 @@ fn add_offline_account(username: String) -> Result<(), String> {
     });
 
     if has_existing {
+        log_warn!("add_offline_account failed: account already exists");
         return Err("该用户名的离线账户已存在".to_string());
     }
 
     let uuid = generate_random_uuid();
     let key = format!("{}:{}", username, uuid);
+    let key_clone = key.clone();
     accounts_file.accounts.push(Account::Offline { username, uuid });
     accounts_file.selected = Some(key);
 
@@ -572,6 +624,7 @@ fn add_offline_account(username: String) -> Result<(), String> {
     fs::write(&accounts_path, content)
         .map_err(|e| format!("Failed to write accounts file: {}", e))?;
 
+    log_info!("Offline account added successfully: {}", key_clone);
     Ok(())
 }
 
@@ -653,8 +706,10 @@ fn add_mojang_account(username: String, uuid: String, refresh_token: String) -> 
 
 #[tauri::command]
 fn remove_account(key: String) -> Result<(), String> {
+    log_info!("Removing account: {}", key);
     let parts: Vec<&str> = key.split(":").collect();
     if parts.len() != 2 {
+        log_error!("remove_account failed: invalid key format");
         return Err("无效的账户标识".to_string());
     }
     let (username, uuid) = (parts[0].to_string(), parts[1].to_string());
@@ -663,6 +718,7 @@ fn remove_account(key: String) -> Result<(), String> {
     let accounts_path = kcl_dir.join(ACCOUNTS_FILE);
 
     if !accounts_path.exists() {
+        log_error!("remove_account failed: accounts file not found");
         return Err("没有找到账户".to_string());
     }
 
@@ -681,6 +737,7 @@ fn remove_account(key: String) -> Result<(), String> {
     });
 
     if accounts_file.accounts.len() == initial_len {
+        log_warn!("remove_account failed: account not found");
         return Err("没有找到要删除的账户".to_string());
     }
 
@@ -690,6 +747,7 @@ fn remove_account(key: String) -> Result<(), String> {
     fs::write(&accounts_path, content)
         .map_err(|e| format!("Failed to write accounts file: {}", e))?;
 
+    log_info!("Account removed successfully");
     Ok(())
 }
 
@@ -740,8 +798,10 @@ fn update_mojang_refresh_token(username: String, refresh_token: String) -> Resul
 
 #[tauri::command]
 async fn quick_login(key: String) -> Result<MicrosoftAuthResult, String> {
+    log_info!("Quick login attempt with key: {}", key);
     let parts: Vec<&str> = key.split(":").collect();
     if parts.len() != 2 {
+        log_error!("Quick login failed: invalid key format");
         return Err("无效的账户标识".to_string());
     }
     let (username, uuid) = (parts[0].to_string(), parts[1].to_string());
@@ -766,36 +826,47 @@ async fn quick_login(key: String) -> Result<MicrosoftAuthResult, String> {
 
     match account {
         Account::Offline { .. } => {
+            log_warn!("Quick login failed: offline account cannot use quick login");
             return Err("离线账户无法使用快捷登录".to_string());
         }
         Account::Mojang { username, uuid: _, refresh_token } => {
+            log_info!("Quick login success for user: {}", username);
             return login_with_refresh_token(username.clone(), refresh_token.clone()).await;
         }
     }
 }
 
 async fn login_with_refresh_token(username: String, refresh_token: String) -> Result<MicrosoftAuthResult, String> {
+    log_info!("Login with refresh token for user: {}", username);
     let env_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".env");
     dotenvy::from_path(env_path).ok();
     let client_id = get_client_id();
 
-    if client_id == "00000000-0000-0000-0000-000000000000" {
-        return Err("该版本中无法使用以下特性：\n- 需要你自行申请 Client ID，然后添加到 .env 的 MS_CLIENT_ID 中".to_string());
+    if client_id == "00000000-0000-0000-0000-000000000000" || client_id == "YOUR_CLIENT_ID_HERE" {
+        log_error!("Login failed: Client ID not configured");
+        return Err("该版本中无法使用以下特性：\n- 需要你自行替换 src-tauri/src/lib.rs 中的 MS_CLIENT_ID 常量为你的 Client ID".to_string());
     }
 
     let client = create_client();
     let token_result = refresh_access_token(&client, &refresh_token)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            log_error!("Token refresh failed: {}", e);
+            e.to_string()
+        })?;
 
     let oauth_access_token = token_result.access_token;
     let new_refresh_token = token_result.refresh_token.unwrap_or(refresh_token.clone());
 
     let mc_result = complete_authentication(&client, &oauth_access_token, &new_refresh_token)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            log_error!("Minecraft auth failed: {}", e);
+            e.to_string()
+        })?;
 
     let _ = update_mojang_account(username, new_refresh_token, mc_result.uuid.clone());
+    log_info!("Login success for user: {}, UUID: {}", mc_result.username, mc_result.uuid);
 
     Ok(mc_result)
 }
@@ -834,15 +905,20 @@ async fn refresh_access_token(client: &Client, refresh_token: &str) -> Result<To
 
 #[tauri::command]
 async fn get_device_code() -> Result<DeviceCodeInfo, String> {
+    log_info!("Starting Microsoft login flow");
     let env_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".env");
     dotenvy::from_path(env_path).ok();
     let client_id = get_client_id();
-    if client_id == "00000000-0000-0000-0000-000000000000" {
-        return Err("该版本中无法使用以下特性：\n- 需要你自行申请 Client ID，然后添加到 .env 的 MS_CLIENT_ID 中".to_string());
+    if client_id == "00000000-0000-0000-0000-000000000000" || client_id == "YOUR_CLIENT_ID_HERE" {
+        log_error!("get_device_code failed: Client ID not configured");
+        return Err("该版本中无法使用以下特性：\n- 需要你自行替换 src-tauri/src/lib.rs 中的 MS_CLIENT_ID 常量为你的 Client ID".to_string());
     }
 
     let client = create_client();
-    let device_code_data = get_device_code_request(&client).await.map_err(|e| e.to_string())?;
+    let device_code_data = get_device_code_request(&client).await.map_err(|e| {
+        log_error!("Device code request failed: {}", e);
+        e.to_string()
+    })?;
 
     let state = LoginState {
         device_code: device_code_data.device_code.clone(),
@@ -857,6 +933,7 @@ async fn get_device_code() -> Result<DeviceCodeInfo, String> {
     }
 
     let _ = webbrowser::open(&device_code_data.verification_uri);
+    log_info!("Opened browser for Microsoft login, user code: {}", device_code_data.user_code);
 
     Ok(DeviceCodeInfo {
         user_code: device_code_data.user_code,
@@ -867,6 +944,7 @@ async fn get_device_code() -> Result<DeviceCodeInfo, String> {
 
 #[tauri::command]
 async fn poll_login_status() -> Result<MicrosoftAuthResult, String> {
+    log_info!("Polling login status");
     let state = {
         let mut login_state = LOGIN_STATE.lock().unwrap();
         login_state.take()
@@ -875,21 +953,29 @@ async fn poll_login_status() -> Result<MicrosoftAuthResult, String> {
     let state = state.ok_or("请先获取设备码")?;
 
     if state.expires_at.elapsed() > std::time::Duration::from_secs(state.expires_in) {
+        log_error!("poll_login_status failed: device code expired");
         return Err("设备码已过期，请重新获取".to_string());
     }
 
     let client = create_client();
     let token_result = poll_for_token_internal(&client, &state.device_code, state.interval, state.expires_in)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            log_error!("Poll for token failed: {}", e);
+            e.to_string()
+        })?;
 
     let oauth_access_token = token_result.access_token;
     let oauth_refresh_token = token_result.refresh_token.unwrap_or_default();
 
     let mc_result = complete_authentication(&client, &oauth_access_token, &oauth_refresh_token)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            log_error!("Minecraft authentication failed: {}", e);
+            e.to_string()
+        })?;
 
+    log_info!("Microsoft login success: {}, UUID: {}", mc_result.username, mc_result.uuid);
     Ok(mc_result)
 }
 
@@ -1146,6 +1232,13 @@ async fn get_mc_profile(client: &Client, mc_access_token: &str) -> Result<McProf
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _ = ensure_kcl_dir();
+    init_logger();
+    log_info!("Kagami Craft Launcher started");
+
+    let machine_id = get_machine_id_for_encryption();
+    let short_id = &machine_id[..8];
+    let system_id = format_system_id(short_id);
+    log_info!("System ID: {}", system_id);
 
     let config = load_config().unwrap_or_default();
 
