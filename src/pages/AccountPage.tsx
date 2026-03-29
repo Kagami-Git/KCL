@@ -3,29 +3,93 @@ import {
   microsoftLogin,
   getAccounts,
   addOfflineAccount,
-  addMojangAccount,
   removeAccount,
-  Account,
+  getPlayerSkin,
   LoginState,
 } from "../utils/auth";
+import { cropSkinToAvatar, canvasToDataUrl, UrlSkinSource } from "../utils/minecraft";
+import defaultSkinUrl from "../resources/MHF_Steve.png";
+
+interface AccountWithAvatar {
+  type: "mojang" | "offline";
+  username: string;
+  uuid: string;
+  refresh_token?: string;
+  avatarUrl?: string;
+}
 
 export default function AccountPage() {
-  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [accounts, setAccounts] = useState<AccountWithAvatar[]>([]);
   const [loginState, setLoginState] = useState<LoginState | null>(null);
   const [showAddOffline, setShowAddOffline] = useState(false);
   const [showAddOnline, setShowAddOnline] = useState(false);
   const [newUsername, setNewUsername] = useState("");
+  const [copyTip, setCopyTip] = useState(false);
+  const [defaultAvatarUrl, setDefaultAvatarUrl] = useState<string>("");
+  const [avatarCache, setAvatarCache] = useState<Record<string, string>>({});
 
   useEffect(() => {
     loadAccounts();
+    loadDefaultAvatar();
   }, []);
+
+  const loadDefaultAvatar = async () => {
+    const img = new Image();
+    img.onload = async () => {
+      const { canvas } = await cropSkinToAvatar(img, 64);
+      setDefaultAvatarUrl(canvasToDataUrl(canvas));
+    };
+    img.onerror = () => setDefaultAvatarUrl(defaultSkinUrl);
+    img.src = defaultSkinUrl;
+  };
+
+  const loadAvatar = async (username: string): Promise<string | undefined> => {
+    if (avatarCache[username]) {
+      return avatarCache[username];
+    }
+    try {
+      const skinInfo = await getPlayerSkin(username);
+      if (skinInfo.skin_url) {
+        const skinSource = new UrlSkinSource(skinInfo.skin_url);
+        const avatarUrl = await cropSkinToAvatar(skinSource, 64).then(({ canvas }) => canvasToDataUrl(canvas));
+        setAvatarCache((prev) => ({ ...prev, [username]: avatarUrl }));
+        return avatarUrl;
+      }
+    } catch (error) {
+      console.error(`Failed to load avatar for ${username}:`, error);
+    }
+    return undefined;
+  };
 
   const loadAccounts = async () => {
     try {
       const data = await getAccounts();
-      setAccounts(data.accounts);
+      const accountsWithAvatars: AccountWithAvatar[] = await Promise.all(
+        data.accounts.map(async (acc) => {
+          const accountWithAvatar: AccountWithAvatar = {
+            type: acc.type,
+            username: acc.username,
+            uuid: acc.uuid || "",
+          };
+          if (acc.type === "mojang" && "refresh_token" in acc) {
+            accountWithAvatar.refresh_token = acc.refresh_token;
+            const avatarUrl = await loadAvatar(acc.username);
+            accountWithAvatar.avatarUrl = avatarUrl;
+          }
+          return accountWithAvatar;
+        })
+      );
+      setAccounts(accountsWithAvatars);
     } catch (error) {
       console.error("Failed to load accounts:", error);
+    }
+  };
+
+  const copyUserCode = async () => {
+    if (loginState?.userCode) {
+      await navigator.clipboard.writeText(loginState.userCode);
+      setCopyTip(true);
+      setTimeout(() => setCopyTip(false), 2000);
     }
   };
 
@@ -44,10 +108,9 @@ export default function AccountPage() {
   const handleAddOnline = async () => {
     try {
       setLoginState({ isLoggingIn: true, progress: 0, message: "正在登录..." });
-      const result = await microsoftLogin((state) => {
+      await microsoftLogin((state) => {
         setLoginState(state);
       });
-      await addMojangAccount(result.username, result.uuid, result.oauth_refresh_token);
       await loadAccounts();
       setShowAddOnline(false);
       setLoginState(null);
@@ -56,7 +119,7 @@ export default function AccountPage() {
     }
   };
 
-  const handleRemoveAccount = async (account: Account) => {
+  const handleRemoveAccount = async (account: AccountWithAvatar) => {
     try {
       await removeAccount(`${account.username}:${account.uuid}`);
       await loadAccounts();
@@ -82,9 +145,13 @@ export default function AccountPage() {
           {loginState?.isLoggingIn && loginState.userCode ? (
             <div className="flex flex-col items-center gap-2 mt-4">
               <p className="text-sm">请在浏览器中打开并填写验证码：</p>
-              <div className="alert alert-info w-full">
+              <div
+                className="alert alert-info cursor-pointer hover:opacity-80 transition-opacity"
+                style={{ gap: "0" }}
+                onClick={copyUserCode}
+              >
                 <div className="flex flex-col items-center w-full">
-                  <p className="text-xs text-base-content/60">验证码</p>
+                  <p className="text-xs text-base-content/60">验证码 {copyTip ? "(已复制!)" : "(点击复制)"}</p>
                   <p className="text-2xl font-bold tracking-widest">{loginState.userCode}</p>
                 </div>
               </div>
@@ -119,13 +186,19 @@ export default function AccountPage() {
             <div className="flex gap-2 mb-4">
               <button
                 className="btn btn-primary btn-sm"
-                onClick={() => setShowAddOnline(true)}
+                onClick={() => {
+                  setShowAddOnline(true);
+                  setShowAddOffline(false);
+                }}
               >
                 添加正版账户
               </button>
               <button
                 className="btn btn-ghost btn-sm"
-                onClick={() => setShowAddOffline(true)}
+                onClick={() => {
+                  setShowAddOffline(true);
+                  setShowAddOnline(false);
+                }}
               >
                 添加离线账户
               </button>
@@ -191,6 +264,7 @@ export default function AccountPage() {
                 <table className="table table-sm">
                   <thead>
                     <tr>
+                      <th></th>
                       <th>用户名</th>
                       <th>类型</th>
                       <th>UUID</th>
@@ -200,6 +274,15 @@ export default function AccountPage() {
                   <tbody>
                     {accounts.map((acc) => (
                       <tr key={acc.username}>
+                        <td>
+                          <div className="w-8 h-8 rounded-full overflow-hidden bg-base-300">
+                            <img
+                              src={acc.avatarUrl || defaultAvatarUrl || defaultSkinUrl}
+                              alt={acc.username}
+                              className="w-full h-full object-cover"
+                            />
+                          </div>
+                        </td>
                         <td className="font-mono">{acc.username}</td>
                         <td>
                           <span className={`badge ${acc.type === "mojang" ? "badge-primary" : "badge-ghost"}`}>

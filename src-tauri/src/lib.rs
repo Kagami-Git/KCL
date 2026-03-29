@@ -8,7 +8,6 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 use tauri::Manager;
@@ -243,8 +242,17 @@ pub enum Account {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct AccountFile {
+    #[serde(rename = "type")]
+    account_type: String,
+    username: String,
+    uuid: String,
+    encrypted_refresh_token: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AccountsFile {
-    pub accounts: Vec<Account>,
+    pub accounts: Vec<AccountFile>,
     pub selected: Option<String>,
 }
 
@@ -252,6 +260,75 @@ pub struct AccountsFile {
 pub struct AccountsData {
     pub accounts: Vec<Account>,
     pub selected: Option<String>,
+}
+
+fn encrypt_refresh_token(data: &str) -> Result<String, String> {
+    use aes_gcm::{
+        aead::{Aead, KeyInit},
+        Aes256Gcm, Nonce,
+    };
+    use rand::RngCore;
+    use sha2::{Sha256, Digest};
+
+    let machine_id = get_machine_id_for_encryption();
+    let mut hasher = Sha256::new();
+    hasher.update(&machine_id);
+    let key_hash = hasher.finalize();
+
+    let key: [u8; 32] = key_hash.into();
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| format!("Cipher error: {}", e))?;
+
+    let mut nonce_bytes = [0u8; 12];
+    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let encrypted = cipher.encrypt(nonce, data.as_bytes())
+        .map_err(|e| format!("Encryption failed: {}", e))?;
+
+    let mut combined = nonce_bytes.to_vec();
+    combined.extend(encrypted);
+
+    Ok(base64::engine::general_purpose::STANDARD.encode(combined))
+}
+
+fn decrypt_refresh_token(encrypted_data: &str) -> Result<String, String> {
+    use aes_gcm::{
+        aead::{Aead, KeyInit},
+        Aes256Gcm, Nonce,
+    };
+    use sha2::{Sha256, Digest};
+
+    let machine_id = get_machine_id_for_encryption();
+    let mut hasher = Sha256::new();
+    hasher.update(&machine_id);
+    let key_hash = hasher.finalize();
+
+    let key: [u8; 32] = key_hash.into();
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| format!("Cipher error: {}", e))?;
+
+    let combined = base64::engine::general_purpose::STANDARD
+        .decode(encrypted_data)
+        .map_err(|e| format!("Failed to decode encrypted data: {}", e))?;
+
+    if combined.len() < 12 {
+        return Err("Invalid encrypted data: too short".to_string());
+    }
+
+    let nonce = Nonce::from_slice(&combined[..12]);
+    let encrypted = &combined[12..];
+
+    let decrypted = cipher.decrypt(nonce, encrypted)
+        .map_err(|e| format!("Decryption failed: {}", e))?;
+
+    String::from_utf8(decrypted)
+        .map_err(|e| format!("Failed to convert decrypted data: {}", e))
+}
+
+#[tauri::command]
+fn get_system_id() -> Result<String, String> {
+    let machine_id = get_machine_id_for_encryption();
+    let short_id = &machine_id[..8];
+    Ok(format_system_id(short_id))
 }
 
 const DEVICE_CODE_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode";
@@ -527,13 +604,6 @@ fn init_kcl_dir() -> Result<String, String> {
 }
 
 #[tauri::command]
-fn get_system_id() -> Result<String, String> {
-    let machine_id = get_machine_id_for_encryption();
-    let short_id = &machine_id[..8];
-    Ok(format_system_id(short_id))
-}
-
-#[tauri::command]
 fn get_accounts() -> Result<AccountsData, String> {
     let kcl_dir = get_kcl_dir()?;
     let accounts_path = kcl_dir.join(ACCOUNTS_FILE);
@@ -548,7 +618,29 @@ fn get_accounts() -> Result<AccountsData, String> {
     let accounts_file: AccountsFile = serde_json::from_str(&content)
         .map_err(|e| format!("Failed to parse accounts file: {}", e))?;
 
-    Ok(AccountsData { accounts: accounts_file.accounts, selected: accounts_file.selected })
+    let accounts_data: Vec<Account> = accounts_file.accounts.into_iter().filter_map(|acc: AccountFile| {
+        match acc.account_type.as_str() {
+            "offline" => Some(Account::Offline { username: acc.username, uuid: acc.uuid }),
+            "mojang" => {
+                if let Some(encrypted) = acc.encrypted_refresh_token {
+                    match decrypt_refresh_token(&encrypted) {
+                        Ok(refresh_token) => {
+                            return Some(Account::Mojang { username: acc.username, uuid: acc.uuid, refresh_token });
+                        }
+                        Err(e) => {
+                            log_error!("Decryption failed for user {}: {}", acc.username, e);
+                        }
+                    }
+                } else {
+                    log_warn!("No encrypted data found for mojang account: {}", acc.username);
+                }
+                None
+            }
+            _ => None,
+        }
+    }).collect();
+
+    Ok(AccountsData { accounts: accounts_data, selected: accounts_file.selected })
 }
 
 #[tauri::command]
@@ -601,10 +693,7 @@ fn add_offline_account(username: String) -> Result<(), String> {
     };
 
     let has_existing = accounts_file.accounts.iter().any(|a| {
-        match a {
-            Account::Offline { username: u, .. } => u == &username,
-            Account::Mojang { .. } => false,
-        }
+        a.account_type == "offline" && a.username == username
     });
 
     if has_existing {
@@ -615,7 +704,12 @@ fn add_offline_account(username: String) -> Result<(), String> {
     let uuid = generate_random_uuid();
     let key = format!("{}:{}", username, uuid);
     let key_clone = key.clone();
-    accounts_file.accounts.push(Account::Offline { username, uuid });
+    accounts_file.accounts.push(AccountFile {
+        account_type: "offline".to_string(),
+        username,
+        uuid,
+        encrypted_refresh_token: None,
+    });
     accounts_file.selected = Some(key);
 
     let content = serde_json::to_string_pretty(&accounts_file)
@@ -662,6 +756,11 @@ fn add_mojang_account(username: String, uuid: String, refresh_token: String) -> 
         return Err("用户名不能为空".to_string());
     }
 
+    log_info!("Adding Mojang account: {}", username);
+
+    let encrypted_token = encrypt_refresh_token(&refresh_token)
+        .map_err(|e| format!("Failed to encrypt refresh token: {}", e))?;
+
     let kcl_dir = ensure_kcl_dir()?;
     let accounts_path = kcl_dir.join(ACCOUNTS_FILE);
 
@@ -678,19 +777,17 @@ fn add_mojang_account(username: String, uuid: String, refresh_token: String) -> 
     let key = format!("{}:{}", username, formatted_uuid);
 
     if let Some(existing) = accounts_file.accounts.iter_mut().find(|a| {
-        match a {
-            Account::Mojang { uuid: u, .. } => u == &formatted_uuid,
-            Account::Offline { .. } => false,
-        }
+        a.account_type == "mojang" && a.uuid == formatted_uuid
     }) {
-        if let Account::Mojang { username: u, .. } = existing {
-            *u = username.clone();
-        }
-        if let Account::Mojang { refresh_token: rt, .. } = existing {
-            *rt = refresh_token.clone();
-        }
+        existing.username = username;
+        existing.encrypted_refresh_token = Some(encrypted_token);
     } else {
-        accounts_file.accounts.push(Account::Mojang { username, uuid: formatted_uuid, refresh_token });
+        accounts_file.accounts.push(AccountFile {
+            account_type: "mojang".to_string(),
+            username,
+            uuid: formatted_uuid,
+            encrypted_refresh_token: Some(encrypted_token),
+        });
     }
 
     accounts_file.selected = Some(key);
@@ -730,10 +827,7 @@ fn remove_account(key: String) -> Result<(), String> {
 
     let initial_len = accounts_file.accounts.len();
     accounts_file.accounts.retain(|a| {
-        match a {
-            Account::Offline { username: u, uuid: id, .. } => !(u == &username && id == &uuid),
-            Account::Mojang { username: u, uuid: id, .. } => !(u == &username && id == &uuid),
-        }
+        !(a.username == username && a.uuid == uuid)
     });
 
     if accounts_file.accounts.len() == initial_len {
@@ -766,15 +860,17 @@ fn update_mojang_account(username: String, refresh_token: String, uuid: String) 
     let mut accounts_file: AccountsFile = serde_json::from_str(&content)
         .map_err(|e| format!("Failed to parse accounts file: {}", e))?;
 
+    let encrypted_token = encrypt_refresh_token(&refresh_token)
+        .map_err(|e| format!("Failed to encrypt refresh token: {}", e))?;
+
     let formatted_uuid = format_mojang_uuid(&uuid);
     let mut found = false;
     for account in &mut accounts_file.accounts {
-        if let Account::Mojang { uuid: u, .. } = account {
-            if u == &formatted_uuid {
-                *account = Account::Mojang { username: username.clone(), uuid: formatted_uuid.clone(), refresh_token };
-                found = true;
-                break;
-            }
+        if account.account_type == "mojang" && account.uuid == formatted_uuid {
+            account.username = username;
+            account.encrypted_refresh_token = Some(encrypted_token);
+            found = true;
+            break;
         }
     }
 
@@ -816,24 +912,29 @@ async fn quick_login(key: String) -> Result<MicrosoftAuthResult, String> {
         .map_err(|e| format!("Failed to parse accounts file: {}", e))?;
 
     let account = accounts_file.accounts.iter()
-        .find(|a| {
-            match a {
-                Account::Offline { username: u, uuid: id, .. } => u == &username && id == &uuid,
-                Account::Mojang { username: u, uuid: id, .. } => u == &username && id == &uuid,
-            }
-        })
+        .find(|a| a.username == username && a.uuid == uuid)
         .ok_or("没有找到该账户")?;
 
-    match account {
-        Account::Offline { .. } => {
-            log_warn!("Quick login failed: offline account cannot use quick login");
-            return Err("离线账户无法使用快捷登录".to_string());
-        }
-        Account::Mojang { username, uuid: _, refresh_token } => {
-            log_info!("Quick login success for user: {}", username);
-            return login_with_refresh_token(username.clone(), refresh_token.clone()).await;
+    if account.account_type == "offline" {
+        log_warn!("Quick login failed: offline account cannot use quick login");
+        return Err("离线账户无法使用快捷登录".to_string());
+    }
+
+    if let Some(encrypted) = &account.encrypted_refresh_token {
+        match decrypt_refresh_token(encrypted) {
+            Ok(refresh_token) => {
+                log_info!("Quick login success for user: {}", account.username);
+                return login_with_refresh_token(account.username.clone(), refresh_token).await;
+            }
+            Err(e) => {
+                log_error!("Failed to decrypt refresh token: {}", e);
+                return Err("无法解密账户信息，请检查系统ID是否一致".to_string());
+            }
         }
     }
+
+    log_error!("Quick login failed: no encrypted refresh token found");
+    Err("账户信息不完整".to_string())
 }
 
 async fn login_with_refresh_token(username: String, refresh_token: String) -> Result<MicrosoftAuthResult, String> {
@@ -866,7 +967,7 @@ async fn login_with_refresh_token(username: String, refresh_token: String) -> Re
         })?;
 
     let _ = update_mojang_account(username, new_refresh_token, mc_result.uuid.clone());
-    log_info!("Login success for user: {}, UUID: {}", mc_result.username, mc_result.uuid);
+    log_info!("Login success for user: {}", mc_result.username);
 
     Ok(mc_result)
 }
@@ -903,6 +1004,162 @@ async fn refresh_access_token(client: &Client, refresh_token: &str) -> Result<To
     Ok(body)
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PlayerSkinInfo {
+    pub uuid: String,
+    pub username: String,
+    pub skin_url: Option<String>,
+    pub cape_url: Option<String>,
+    pub legacy: bool,
+    pub demo: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct MinecraftLookupResponse {
+    #[serde(rename = "id")]
+    uuid: String,
+    #[serde(rename = "name")]
+    username: String,
+    #[serde(rename = "legacy")]
+    legacy: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct MinecraftProfileResponse {
+    #[serde(rename = "id")]
+    uuid: String,
+    #[serde(rename = "name")]
+    username: String,
+    #[serde(rename = "legacy")]
+    legacy: Option<bool>,
+    #[serde(rename = "properties")]
+    properties: Vec<MojangProperty>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct MojangProperty {
+    #[serde(rename = "name")]
+    name: String,
+    #[serde(rename = "value")]
+    value: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TexturesData {
+    #[serde(rename = "timestamp")]
+    timestamp: Option<u64>,
+    #[serde(rename = "profileId")]
+    profile_id: Option<String>,
+    #[serde(rename = "profileName")]
+    profile_name: Option<String>,
+    #[serde(rename = "textures")]
+    textures: Option<TexturesObject>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TexturesObject {
+    #[serde(rename = "SKIN")]
+    skin: Option<SkinData>,
+    #[serde(rename = "CAPE")]
+    cape: Option<CapeData>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SkinData {
+    #[serde(rename = "url")]
+    url: String,
+    #[serde(rename = "metadata")]
+    metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CapeData {
+    #[serde(rename = "url")]
+    url: String,
+}
+
+#[tauri::command]
+async fn get_player_skin(username: String) -> Result<PlayerSkinInfo, String> {
+    //log_info!("Getting player skin for: {}", username);
+
+    let client = create_client();
+
+    let uuid_response = client
+        .get(format!("https://api.minecraftservices.com/minecraft/profile/lookup/name/{}", username))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to Mojang API: {}", e))?;
+
+    let (uuid, is_legacy, is_demo) = if uuid_response.status() == 404 {
+        return Err(format!("Player not found: {}", username));
+    } else if !uuid_response.status().is_success() {
+        return Err(format!("Mojang API error: status {}", uuid_response.status()));
+    } else {
+        let uuid_data: MinecraftLookupResponse = uuid_response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse UUID response: {}", e))?;
+        (
+            uuid_data.uuid,
+            uuid_data.legacy.unwrap_or(false),
+            false,
+        )
+    };
+
+    let profile_response = client
+        .get(format!("https://sessionserver.mojang.com/session/minecraft/profile/{}?unsigned=false", uuid))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to get profile: {}", e))?;
+
+    let (skin_url, cape_url) = if profile_response.status() == 204 || profile_response.status() == 404 {
+        (None, None)
+    } else if !profile_response.status().is_success() {
+        return Err(format!("Profile API error: status {}", profile_response.status()));
+    } else {
+        let profile_data: MinecraftProfileResponse = profile_response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse profile response: {}", e))?;
+
+        let mut skin_url: Option<String> = None;
+        let mut cape_url: Option<String> = None;
+
+        for prop in &profile_data.properties {
+            if prop.name == "textures" {
+                let decoded = base64::engine::general_purpose::STANDARD
+                    .decode(&prop.value)
+                    .map_err(|e| format!("Failed to decode base64: {}", e))?;
+                let textures: TexturesData = serde_json::from_slice(&decoded)
+                    .map_err(|e| format!("Failed to parse textures JSON: {}", e))?;
+
+                if let Some(textures_obj) = &textures.textures {
+                    if let Some(skin) = &textures_obj.skin {
+                        skin_url = Some(skin.url.clone());
+                    }
+                    if let Some(cape) = &textures_obj.cape {
+                        cape_url = Some(cape.url.clone());
+                    }
+                }
+                break;
+            }
+        }
+
+        (skin_url, cape_url)
+    };
+
+    //log_info!("Player skin found for: {}", username);
+
+    Ok(PlayerSkinInfo {
+        uuid,
+        username,
+        skin_url,
+        cape_url,
+        legacy: is_legacy,
+        demo: is_demo,
+    })
+}
+
 #[tauri::command]
 async fn get_device_code() -> Result<DeviceCodeInfo, String> {
     log_info!("Starting Microsoft login flow");
@@ -933,7 +1190,7 @@ async fn get_device_code() -> Result<DeviceCodeInfo, String> {
     }
 
     let _ = webbrowser::open(&device_code_data.verification_uri);
-    log_info!("Opened browser for Microsoft login, user code: {}", device_code_data.user_code);
+    log_info!("Opened browser for Microsoft login");
 
     Ok(DeviceCodeInfo {
         user_code: device_code_data.user_code,
@@ -975,7 +1232,9 @@ async fn poll_login_status() -> Result<MicrosoftAuthResult, String> {
             e.to_string()
         })?;
 
-    log_info!("Microsoft login success: {}, UUID: {}", mc_result.username, mc_result.uuid);
+    add_mojang_account(mc_result.username.clone(), mc_result.uuid.clone(), oauth_refresh_token.clone())?;
+
+    log_info!("Microsoft login success: {}", mc_result.username);
     Ok(mc_result)
 }
 
@@ -1235,15 +1494,12 @@ pub fn run() {
     init_logger();
     log_info!("Kagami Craft Launcher started");
 
-    let machine_id = get_machine_id_for_encryption();
-    let short_id = &machine_id[..8];
-    let system_id = format_system_id(short_id);
-    log_info!("System ID: {}", system_id);
-
     let config = load_config().unwrap_or_default();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .setup(move |app| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::<f64> {
@@ -1278,7 +1534,8 @@ pub fn run() {
             update_mojang_account,
             quick_login,
             get_device_code,
-            poll_login_status
+            poll_login_status,
+            get_player_skin
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

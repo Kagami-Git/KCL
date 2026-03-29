@@ -4,6 +4,7 @@ import GamePage from "../pages/GamePage";
 import DownloadPage from "../pages/DownloadPage";
 import SettingsPage from "../pages/SettingsPage";
 import AccountPage from "../pages/AccountPage";
+import ToolboxPage from "../pages/ToolBoxPage";
 
 export default function Sidebar() {
   const linkClass = ({ isActive }: { isActive: boolean }) =>
@@ -32,6 +33,7 @@ export default function Sidebar() {
             <Route path="/accounts" element={<AccountPage />} />
             <Route path="/download" element={<DownloadPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/toolbox" element={<ToolboxPage />} />
           </Routes>
         </div>
       </div>
@@ -80,6 +82,14 @@ export default function Sidebar() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
               </svg>
               <span className="text-sm sm:text-base">Settings</span>
+            </NavLink>
+          </li>
+          <li>
+            <NavLink to="/toolbox" className={linkClass}>
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" className="w-4 h-4 sm:w-5 sm:h-5 stroke-current">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"></path>
+              </svg>
+              <span className="text-sm sm:text-base">Toolbox</span>
             </NavLink>
           </li>
           

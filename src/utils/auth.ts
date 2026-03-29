@@ -5,7 +5,6 @@ export interface MicrosoftAuthResult {
   username: string;
   uuid: string;
   profile_json: string;
-  oauth_refresh_token: string;
 }
 
 export interface LoginState {
@@ -84,6 +83,19 @@ export async function getDeviceCode(): Promise<DeviceCodeInfo> {
 
 export async function pollLoginStatus(): Promise<MicrosoftAuthResult> {
   return await invoke<MicrosoftAuthResult>("poll_login_status");
+}
+
+export interface PlayerSkinInfo {
+  uuid: string;
+  username: string;
+  skin_url: string | null;
+  cape_url: string | null;
+  legacy: boolean;
+  demo: boolean;
+}
+
+export async function getPlayerSkin(username: string): Promise<PlayerSkinInfo> {
+  return await invoke<PlayerSkinInfo>("get_player_skin", { username });
 }
 
 export async function microsoftLogin(
