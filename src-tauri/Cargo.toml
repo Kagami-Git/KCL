@@ -1,8 +1,8 @@
 [package]
-name = "kagamicraftlauncher"
+name = "KagamiLauncher"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Kagami Launcher - A Minecraft Launcher"
+authors = ["ImJingLan", "Kagami-Git"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -30,4 +30,8 @@ base64 = "0.22"
 aes-gcm = "0.10"
 rand = "0.8"
 dirs = "5"
+rsa = "0.9"
+hkdf = "0.12"
+sha2 = "0.10"
+arrayref = "0.3"
 

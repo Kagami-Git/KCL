@@ -46,6 +46,10 @@ export async function initKclDir(): Promise<string> {
   return await invoke<string>("init_kcl_dir");
 }
 
+export async function getSystemId(): Promise<string> {
+  return await invoke<string>("get_system_id");
+}
+
 export async function getAccounts(): Promise<AccountsData> {
   return await invoke<AccountsData>("get_accounts");
 }

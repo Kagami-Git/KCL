@@ -3,7 +3,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use base64::Engine;
-use rand::Rng;
+use rand::{Rng, SeedableRng};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -363,6 +363,109 @@ fn decrypt_data(data: &str) -> Result<String, String> {
         .map_err(|e| format!("Failed to convert decrypted data to string: {}", e))
 }
 
+fn format_system_id(id: &[u8]) -> String {
+    let hex: String = id.iter()
+        .map(|b| format!("{:02X}", b))
+        .collect();
+    hex.chars()
+        .collect::<Vec<_>>()
+        .chunks(4)
+        .map(|chunk| chunk.iter().collect::<String>())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+fn get_machine_id_for_encryption() -> [u8; 32] {
+    let machine_id = dirs::data_local_dir()
+        .map(|d| d.join("machine_id"))
+        .map(|p| {
+            if p.exists() {
+                fs::read(&p).ok().map(|v| {
+                    let mut arr = [0u8; 32];
+                    let len = v.len().min(32);
+                    arr[..len].copy_from_slice(&v[..len]);
+                    arr
+                })
+            } else {
+                let id: [u8; 32] = rand::thread_rng().gen();
+                let _ = fs::write(&p, &id);
+                Some(id)
+            }
+        })
+        .flatten();
+    machine_id.unwrap_or_else(|| {
+        let mut id = [0u8; 32];
+        rand::thread_rng().fill(&mut id);
+        id
+    })
+}
+
+fn derive_keys_from_machine_id(machine_id: &[u8; 32]) -> Result<(rsa::RsaPrivateKey, rsa::RsaPublicKey), String> {
+    use hkdf::Hkdf;
+    use sha2::Sha256;
+
+    let salt = b"KagamiCraftLauncher_v1";
+    let info = b"RSA_KEY_DERIVATION";
+
+    let hk = Hkdf::<Sha256>::new(Some(salt), machine_id);
+    let mut okm = [0u8; 64];
+    hk.expand(info, &mut okm)
+        .map_err(|e| format!("HKDF expand failed: {}", e))?;
+
+    let seed: [u8; 32] = okm[..32].try_into().unwrap();
+
+    let mut rng = rand::rngs::StdRng::from_seed(seed);
+
+    let private_key = rsa::RsaPrivateKey::new(&mut rng, 2048)
+        .map_err(|e| format!("Failed to generate RSA key: {}", e))?;
+    let public_key = rsa::RsaPublicKey::from(&private_key);
+
+    Ok((private_key, public_key))
+}
+
+#[allow(dead_code)]
+fn encrypt_token(data: &str, public_key: &rsa::RsaPublicKey) -> Result<String, String> {
+    let rng = &mut rand::thread_rng();
+    let encrypted = public_key
+        .encrypt(rng, rsa::pkcs1v15::Pkcs1v15Encrypt, data.as_bytes())
+        .map_err(|e| format!("Encryption failed: {}", e))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(encrypted))
+}
+
+#[allow(dead_code)]
+fn decrypt_token(encrypted_data: &str, private_key: &rsa::RsaPrivateKey) -> Result<String, String> {
+    let encrypted = base64::engine::general_purpose::STANDARD
+        .decode(encrypted_data)
+        .map_err(|e| format!("Failed to decode base64: {}", e))?;
+    let decrypted = private_key
+        .decrypt(rsa::pkcs1v15::Pkcs1v15Encrypt, &encrypted)
+        .map_err(|e| format!("Decryption failed: {}", e))?;
+    String::from_utf8(decrypted)
+        .map_err(|e| format!("Failed to convert decrypted data to string: {}", e))
+}
+
+#[allow(dead_code)]
+fn encrypt_token_with_machine_id(data: &str) -> Result<(String, String), String> {
+    let machine_id = get_machine_id_for_encryption();
+    let (private_key, public_key) = derive_keys_from_machine_id(&machine_id)?;
+    let encrypted = encrypt_token(data, &public_key)?;
+
+    use rsa::pkcs8::{EncodePrivateKey, LineEnding};
+    let private_key_pem = private_key.to_pkcs8_pem(LineEnding::LF)
+        .map_err(|e| format!("Failed to encode private key: {}", e))?;
+
+    Ok((encrypted, private_key_pem.to_string()))
+}
+
+#[allow(dead_code)]
+fn decrypt_token_with_machine_id(encrypted_data: &str, private_key_pem: &str) -> Result<String, String> {
+    let _machine_id = get_machine_id_for_encryption();
+    use rsa::pkcs8::DecodePrivateKey;
+    let private_key = rsa::RsaPrivateKey::from_pkcs8_pem(private_key_pem)
+        .map_err(|e| format!("Failed to decode private key: {}", e))?;
+    decrypt_token(encrypted_data, &private_key)
+}
+
 struct LoginState {
     device_code: String,
     interval: u64,
@@ -376,6 +479,13 @@ static LOGIN_STATE: std::sync::Mutex<Option<LoginState>> = std::sync::Mutex::new
 fn init_kcl_dir() -> Result<String, String> {
     let kcl_dir = ensure_kcl_dir()?;
     Ok(kcl_dir.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn get_system_id() -> Result<String, String> {
+    let machine_id = get_machine_id_for_encryption();
+    let short_id = &machine_id[..8];
+    Ok(format_system_id(short_id))
 }
 
 #[tauri::command]
@@ -1066,6 +1176,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             init_kcl_dir,
+            get_system_id,
             get_accounts,
             set_selected_account,
             add_offline_account,

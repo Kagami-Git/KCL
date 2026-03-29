@@ -22,6 +22,7 @@ export default function Sidebar() {
             </label>
           </div>
           <div className="flex-1">
+            <span className="text-lg sm:text-xl font-bold"></span>
           </div>
         </div>
         <div className="flex-1 p-2 sm:p-4 overflow-auto">
@@ -37,7 +38,7 @@ export default function Sidebar() {
       <div className="drawer-side z-50">
         <label htmlFor="main-drawer" className="drawer-overlay"></label>
         <ul className="menu bg-base-200 min-h-full w-48 sm:w-64 p-2 sm:p-4 gap-1 sm:gap-2">
-          <li className="hidden min-[810px]:list-item">
+          <li className="min-[810px]:list-item">
             <span className="text-lg sm:text-xl font-bold mb-2 sm:mb-4">Kagami Launcher</span>
           </li>
           <li>
