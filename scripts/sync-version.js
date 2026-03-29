@@ -1,37 +1,45 @@
 import fs from 'fs';
 import path from 'path';
+import readline from 'readline';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const VERSION = "0.0.3";
-
-if (!VERSION) {
-  console.error('Usage: node sync-version.js <version>');
-  process.exit(1);
-}
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout,
+});
 
 const packagePath = path.join(__dirname, '..', 'package.json');
 const tauriConfPath = path.join(__dirname, '..', 'src-tauri', 'tauri.conf.json');
 const cargoPath = path.join(__dirname, '..', 'src-tauri', 'Cargo.toml');
 
-const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
-const tauriJson = JSON.parse(fs.readFileSync(tauriConfPath, 'utf8'));
-const cargoToml = fs.readFileSync(cargoPath, 'utf8');
+rl.question('Enter version number: ', (VERSION) => {
+  if (!VERSION || !VERSION.trim()) {
+    console.error('Version number is required');
+    rl.close();
+    process.exit(1);
+  }
 
-console.log(`Syncing version: ${VERSION}`);
+  const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+  const tauriJson = JSON.parse(fs.readFileSync(tauriConfPath, 'utf8'));
+  const cargoToml = fs.readFileSync(cargoPath, 'utf8');
 
-packageJson.version = VERSION;
-tauriJson.version = VERSION;
+  console.log(`Syncing version: ${VERSION}`);
 
-fs.writeFileSync(packagePath, JSON.stringify(packageJson, null, 2) + '\n');
-fs.writeFileSync(tauriConfPath, JSON.stringify(tauriJson, null, 2) + '\n');
+  packageJson.version = VERSION;
+  tauriJson.version = VERSION;
 
-const newCargoToml = cargoToml.replace(
-  /^version = "[\d.]+"$/m,
-  `version = "${VERSION}"`
-);
-fs.writeFileSync(cargoPath, newCargoToml);
+  fs.writeFileSync(packagePath, JSON.stringify(packageJson, null, 2) + '\n');
+  fs.writeFileSync(tauriConfPath, JSON.stringify(tauriJson, null, 2) + '\n');
 
-console.log('Version synced to package.json, tauri.conf.json and Cargo.toml');
+  const newCargoToml = cargoToml.replace(
+    /^version = "[\d.]+"$/m,
+    `version = "${VERSION}"`
+  );
+  fs.writeFileSync(cargoPath, newCargoToml);
+
+  console.log('Version synced to package.json, tauri.conf.json and Cargo.toml');
+  rl.close();
+});
