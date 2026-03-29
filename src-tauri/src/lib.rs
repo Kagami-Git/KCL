@@ -340,11 +340,21 @@ const MC_ENTITLEMENTS_URL: &str = "https://api.minecraftservices.com/entitlement
 const MC_PROFILE_URL: &str = "https://api.minecraftservices.com/minecraft/profile";
 const ACCOUNTS_FILE: &str = "accounts.json";
 const CONFIG_FILE: &str = "config.json";
+const INSTANCES_FILE: &str = "instances.json";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LauncherConfig {
     pub window_width: u32,
     pub window_height: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MinecraftFolder {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub icon: Option<String>,
+    pub last_played: Option<u64>,
 }
 
 impl Default for LauncherConfig {
@@ -1488,6 +1498,374 @@ async fn get_mc_profile(client: &Client, mc_access_token: &str) -> Result<McProf
     Ok(result)
 }
 
+fn load_minecraft_folders() -> Result<Vec<MinecraftFolder>, String> {
+    let kcl_dir = get_kcl_dir()?;
+    let instances_path = kcl_dir.join(INSTANCES_FILE);
+
+    if !instances_path.exists() {
+        return Ok(vec![]);
+    }
+
+    let content = fs::read_to_string(&instances_path)
+        .map_err(|e| format!("Failed to read instances file: {}", e))?;
+
+    serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse instances file: {}", e))
+}
+
+fn save_minecraft_folders(folders: &[MinecraftFolder]) -> Result<(), String> {
+    let kcl_dir = ensure_kcl_dir()?;
+    let instances_path = kcl_dir.join(INSTANCES_FILE);
+
+    let content = serde_json::to_string_pretty(&folders)
+        .map_err(|e| format!("Failed to serialize: {}", e))?;
+
+    fs::write(&instances_path, content)
+        .map_err(|e| format!("Failed to write: {}", e))
+}
+
+fn generate_id() -> String {
+    let bytes: [u8; 8] = rand::thread_rng().gen();
+    hex::encode(&bytes)
+}
+
+#[tauri::command]
+fn get_minecraft_folders() -> Result<Vec<MinecraftFolder>, String> {
+    log_info!("Getting all minecraft folders");
+    load_minecraft_folders()
+}
+
+#[tauri::command]
+fn add_minecraft_folder(name: String, path: String) -> Result<MinecraftFolder, String> {
+    log_info!("Adding minecraft folder: {} at path: {}", name, path);
+
+    if name.trim().is_empty() {
+        return Err("名称不能为空".to_string());
+    }
+
+    let input_path = std::path::Path::new(&path);
+    if !input_path.exists() {
+        return Err("路径不存在".to_string());
+    }
+
+    let minecraft_path = find_minecraft_folder(&input_path)?;
+
+    let folders = load_minecraft_folders()?;
+    let normalized_path = minecraft_path.to_string_lossy().to_string();
+    if folders.iter().any(|f| f.path == normalized_path) {
+        return Err("该文件夹已存在".to_string());
+    }
+
+    let folder = MinecraftFolder {
+        id: generate_id(),
+        name,
+        path: normalized_path,
+        icon: None,
+        last_played: None,
+    };
+
+    let mut new_folders = folders;
+    new_folders.push(folder.clone());
+    save_minecraft_folders(&new_folders)?;
+
+    log_info!("Minecraft folder added: {}", folder.id);
+    Ok(folder)
+}
+
+fn find_minecraft_folder(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    if path.is_file() {
+        if let Some(parent) = path.parent() {
+            return find_minecraft_folder(parent);
+        }
+        return Err("无效的路径".to_string());
+    }
+
+    if path.file_name().map(|n| n == ".minecraft").unwrap_or(false) {
+        return Ok(path.to_path_buf());
+    }
+
+    let minecraft_folder = path.join(".minecraft");
+    if minecraft_folder.exists() && minecraft_folder.is_dir() {
+        return Ok(minecraft_folder);
+    }
+
+    if path.parent().map(|p| p.join(".minecraft").exists()).unwrap_or(false) {
+        return Ok(path.parent().unwrap().join(".minecraft"));
+    }
+
+    Err("没有找到 .minecraft 文件夹".to_string())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VersionInfo {
+    pub id: String,
+    pub mc_version: String,
+    pub type_: String,
+    pub banner: Option<String>,
+    pub mod_loaders: Vec<ModLoaderInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ModLoaderInfo {
+    pub name: String,
+    pub version: String,
+}
+
+fn detect_mod_loaders(json_text: &str) -> Vec<ModLoaderInfo> {
+    let mut mod_loaders = Vec::new();
+    let json_lower = json_text.to_lowercase();
+
+    if json_lower.contains("optifine") {
+        let version = extract_optifine_version(json_text).unwrap_or_else(|| "未知版本".to_string());
+        mod_loaders.push(ModLoaderInfo {
+            name: "OptiFine".to_string(),
+            version,
+        });
+    }
+
+    if json_lower.contains("liteloader") {
+        mod_loaders.push(ModLoaderInfo {
+            name: "LiteLoader".to_string(),
+            version: "".to_string(),
+        });
+    }
+
+    let has_fabric = json_lower.contains("net.fabricmc:fabric-loader") || json_lower.contains("org.quiltmc:quilt-loader");
+    let has_quilt = json_lower.contains("org.quiltmc:quilt-loader");
+    let has_forge = json_lower.contains("minecraftforge") && !json_lower.contains("net.neoforge");
+    let has_neoforge = json_lower.contains("net.neoforge");
+
+    if has_fabric {
+        let version = extract_fabric_version(json_text).unwrap_or_else(|| "未知版本".to_string());
+        mod_loaders.push(ModLoaderInfo {
+            name: if has_quilt { "Quilt".to_string() } else { "Fabric".to_string() },
+            version,
+        });
+    } else if has_neoforge {
+        let version = extract_neoforge_version(json_text).unwrap_or_else(|| "未知版本".to_string());
+        mod_loaders.push(ModLoaderInfo {
+            name: "NeoForge".to_string(),
+            version,
+        });
+    } else if has_forge {
+        let version = extract_forge_version(json_text).unwrap_or_else(|| "未知版本".to_string());
+        mod_loaders.push(ModLoaderInfo {
+            name: "Forge".to_string(),
+            version,
+        });
+    }
+
+    mod_loaders
+}
+
+fn extract_optifine_version(json_text: &str) -> Option<String> {
+    let re = regex::Regex::new(r#"HD_U_([^:/\"]+)"#).ok()?;
+    re.captures(json_text)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().replace("_", " ").replace("-", " "))
+}
+
+fn extract_fabric_version(json_text: &str) -> Option<String> {
+    let patterns = [
+        r#"net\.fabricmc:fabric-loader:([0-9.]+(?:\+build[0-9]+)?)"#,
+        r#"org\.quiltmc:quilt-loader:([0-9.]+(?:\+build[0-9]+)?)"#,
+    ];
+    for pattern in &patterns {
+        if let Ok(re) = regex::Regex::new(pattern) {
+            if let Some(caps) = re.captures(json_text) {
+                return Some(caps.get(1).unwrap().as_str().replace("+build", ""));
+            }
+        }
+    }
+    None
+}
+
+fn extract_forge_version(json_text: &str) -> Option<String> {
+    let patterns = [
+        r"forge:([0-9.]+(?:_pre[0-9]*)?)-([0-9.]+)",
+        r"net\.minecraftforge:minecraftforge:([0-9.]+)",
+        r"net\.minecraftforge:fmlloader:([0-9.]+)-([0-9.]+)",
+    ];
+    for pattern in &patterns {
+        if let Ok(re) = regex::Regex::new(pattern) {
+            if let Some(caps) = re.captures(json_text) {
+                return Some(caps.get(caps.len().saturating_sub(1)).unwrap().as_str().to_string());
+            }
+        }
+    }
+    None
+}
+
+fn extract_neoforge_version(json_text: &str) -> Option<String> {
+    let re = regex::Regex::new(r#""--fml\.neoForgeVersion",\s*"([^"]+)""#).ok()?;
+    re.captures(json_text).and_then(|caps| caps.get(1)).map(|m| m.as_str().to_string())
+}
+
+fn detect_mc_version(json_text: &str) -> String {
+    let version_pattern = r"(([1-9][0-9]w[0-9]{2}[a-g])|((1|[2-9][0-9])\.[0-9]+(\.[0-9]+)?(-(pre|rc|snapshot-?)[1-9]*| Pre-Release( [1-9])?)?))";
+
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(json_text) {
+        if let Some(inherits) = json.get("inheritsFrom").and_then(|v| v.as_str()) {
+            if !inherits.is_empty() {
+                return inherits.to_string();
+            }
+        }
+
+        if let Some(jar) = json.get("jar").and_then(|v| v.as_str()) {
+            if !jar.is_empty() {
+                return jar.to_string();
+            }
+        }
+
+        if let Some(args) = json.get("arguments").and_then(|v| v.get("game")) {
+            if let Some(arr) = args.as_array() {
+                for (i, item) in arr.iter().enumerate() {
+                    if item.as_str() == Some("--fml.mcVersion") {
+                        if let Some(next) = arr.get(i + 1) {
+                            if let Some(version) = next.as_str() {
+                                return version.to_string();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(id) = json.get("id").and_then(|v| v.as_str()) {
+            if !id.is_empty() {
+                if let Ok(re) = regex::Regex::new(version_pattern) {
+                    if let Some(caps) = re.captures(id) {
+                        return caps.get(0).unwrap().as_str().to_string();
+                    }
+                }
+                return id.to_string();
+            }
+        }
+
+        let json_for_search: Vec<String> = json_text.lines()
+            .map(|l| l.to_string())
+            .filter(|l| !l.contains("libraries"))
+            .collect();
+        let search_text = json_for_search.join("\n");
+
+        if let Ok(re) = regex::Regex::new(version_pattern) {
+            if let Some(caps) = re.captures(&search_text) {
+                return caps.get(0).unwrap().as_str().to_string();
+            }
+        }
+    }
+
+    "".to_string()
+}
+
+fn find_banner(versions_dir: &std::path::Path, version_id: &str) -> Option<String> {
+    let extensions = [("webp", "image/webp"), ("jpg", "image/jpeg"), ("jpeg", "image/jpeg"), ("png", "image/png"), ("bmp", "image/bmp")];
+
+    for (ext, mime) in extensions.iter() {
+        let banner_path = versions_dir.join(version_id).join(format!("banner.{}", ext));
+        if banner_path.exists() {
+            if let Ok(data) = fs::read(&banner_path) {
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&data);
+                return Some(format!("data:{};base64,{}", mime, encoded));
+            }
+        }
+    }
+    None
+}
+
+#[tauri::command]
+fn get_versions_from_folder(path: String) -> Result<Vec<VersionInfo>, String> {
+    log_info!("Getting versions from: {}", path);
+
+    let versions_path = std::path::Path::new(&path).join("versions");
+    if !versions_path.exists() {
+        return Err("versions 文件夹不存在".to_string());
+    }
+
+    let mut versions = vec![];
+
+    let entries = fs::read_dir(&versions_path)
+        .map_err(|e| format!("无法读取 versions 文件夹: {}", e))?;
+
+    for entry in entries.filter_map(|e| e.ok()) {
+        let entry_path = entry.path();
+        if entry_path.is_dir() {
+            let folder_name = match entry_path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+
+            if folder_name.starts_with('.') {
+                continue;
+            }
+
+            let json_path = entry_path.join(format!("{}.json", folder_name));
+            if json_path.exists() {
+                if let Ok(content) = fs::read_to_string(&json_path) {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                        let version_type = json.get("type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+
+                        versions.push(VersionInfo {
+                            id: folder_name.to_string(),
+                            mc_version: detect_mc_version(&content),
+                            type_: version_type,
+                            banner: find_banner(&versions_path, folder_name),
+                            mod_loaders: detect_mod_loaders(&content),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    versions.sort_by(|a, b| a.id.cmp(&b.id));
+    log_info!("Found {} versions", versions.len());
+    Ok(versions)
+}
+
+#[tauri::command]
+fn remove_minecraft_folder(id: String) -> Result<(), String> {
+    log_info!("Removing minecraft folder: {}", id);
+
+    let mut folders = load_minecraft_folders()?;
+    let initial_len = folders.len();
+    folders.retain(|f| f.id != id);
+
+    if folders.len() == initial_len {
+        return Err("没有找到要删除的文件夹".to_string());
+    }
+
+    save_minecraft_folders(&folders)?;
+    log_info!("Minecraft folder removed");
+    Ok(())
+}
+
+#[tauri::command]
+fn update_minecraft_folder(id: String, name: Option<String>, icon: Option<String>) -> Result<MinecraftFolder, String> {
+    log_info!("Updating minecraft folder: {}", id);
+
+    let mut folders = load_minecraft_folders()?;
+
+    let folder = folders.iter_mut().find(|f| f.id == id)
+        .ok_or("没有找到要更新的文件夹")?;
+
+    if let Some(new_name) = name {
+        folder.name = new_name;
+    }
+    if let Some(new_icon) = icon {
+        folder.icon = Some(new_icon);
+    }
+
+    let updated_folder = folder.clone();
+    save_minecraft_folders(&folders)?;
+
+    log_info!("Minecraft folder updated");
+    Ok(updated_folder)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _ = ensure_kcl_dir();
@@ -1535,7 +1913,12 @@ pub fn run() {
             quick_login,
             get_device_code,
             poll_login_status,
-            get_player_skin
+            get_player_skin,
+            get_minecraft_folders,
+            add_minecraft_folder,
+            remove_minecraft_folder,
+            get_versions_from_folder,
+            update_minecraft_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
