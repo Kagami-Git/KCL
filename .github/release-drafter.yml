@@ -3,7 +3,9 @@ template: |
 
   $CHANGES
 
-  **Full Changelog**: https://github.com/Kagami-Git/KCL/compare/v$PREVIOUS_TAG...v$VERSION
+  **Full Changelog**: https://github.com/Kagami-Git/KCL/compare/$PREVIOUS_TAG...$VERSION
+
+draft: true
 
 categories:
   - title: Features

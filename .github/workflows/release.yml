@@ -31,7 +31,6 @@ jobs:
         with:
           tag: v${{ steps.get_version.outputs.version }}
           config-name: release-drafter.yml
-          draft: true
 
   build:
     needs: release

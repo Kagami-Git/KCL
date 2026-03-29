@@ -7,6 +7,7 @@ use rand::Rng;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 use tauri::Manager;
@@ -47,6 +48,7 @@ pub struct TokenResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(non_snake_case)]
 pub struct XblTokenRequest {
     pub Properties: XblProperties,
     pub RelyingParty: String,
@@ -61,6 +63,7 @@ pub struct XblProperties {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(non_snake_case)]
 pub struct XblTokenResponse {
     pub Token: String,
     pub DisplayClaims: Option<XblDisplayClaims>,
@@ -77,6 +80,7 @@ pub struct XuiClaim {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(non_snake_case)]
 pub struct XstsTokenRequest {
     pub Properties: XstsProperties,
     pub RelyingParty: String,
@@ -133,7 +137,11 @@ pub struct McSkin {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(non_snake_case)]
 pub struct TextureProperty {
+    pub timestamp: Option<u64>,
+    pub profile_id: Option<String>,
+    pub profile_name: Option<String>,
     pub textures: Textures,
 }
 
@@ -285,6 +293,7 @@ fn ensure_kcl_dir() -> Result<PathBuf, String> {
     Ok(kcl_dir)
 }
 
+#[allow(dead_code)]
 fn get_machine_id() -> [u8; 32] {
     let machine_id = dirs::data_local_dir()
         .map(|d| d.join("machine_id"))
@@ -329,6 +338,7 @@ fn encrypt_data(data: &str) -> Result<String, String> {
     Ok(base64::engine::general_purpose::STANDARD.encode(&combined))
 }
 
+#[allow(dead_code)]
 fn decrypt_data(data: &str) -> Result<String, String> {
     let key = get_machine_id();
     let cipher = Aes256Gcm::new_from_slice(&key)
@@ -613,6 +623,7 @@ fn update_mojang_account(username: String, refresh_token: String, uuid: String) 
     Ok(())
 }
 
+#[allow(dead_code)]
 fn update_mojang_refresh_token(username: String, refresh_token: String) -> Result<(), String> {
     update_mojang_account(username, refresh_token, String::new())
 }
