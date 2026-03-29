@@ -86,4 +86,4 @@ jobs:
         run: |
           $release = gh release view v${{ needs.release.outputs.version }} --json uploadUrl,url -q '.'
           $upload_url = $release | ConvertFrom-Json | Select-Object -ExpandProperty uploadUrl
-          gh release upload v${{ needs.release.outputs.version }} src-tauri/target/release/kagamicraftlauncher.exe --clobber
+          gh release upload v${{ needs.release.outputs.version }} src-tauri/target/release/KagamiLauncher.exe --clobber
