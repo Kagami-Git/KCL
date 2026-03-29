@@ -30,3 +30,4 @@ src-tauri/gen
 .env.dev
 # OS
 Thumbs.db
+agent_docs
