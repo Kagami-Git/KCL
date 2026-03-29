@@ -10,7 +10,6 @@ jobs:
   release:
     runs-on: ubuntu-latest
     outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
       version: ${{ steps.get_version.outputs.version }}
     steps:
       - name: Checkout
@@ -24,24 +23,15 @@ jobs:
           VERSION=$(cat package.json | grep '"version"' | sed 's/.*"version": "\(.*\)".*/\1/')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: v${{ steps.get_version.outputs.version }}
-          release_name: Kagami Craft Launcher v${{ steps.get_version.outputs.version }}
-          draft: true
-          prerelease: false
-
       - name: Generate Release Body
+        id: generate_release_body
         uses: release-drafter/release-drafter@v6
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag: v${{ steps.get_version.outputs.version }}
           config-name: release-drafter.yml
+          draft: true
 
   build:
     needs: release
@@ -92,11 +82,9 @@ jobs:
         run: pnpm tauri build
 
       - name: Upload exe to Release
-        uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.release.outputs.upload_url }}
-          asset_path: src-tauri/target/release/kagamicraftlauncher.exe
-          asset_name: KagamiCraft_Launcher.exe
-          asset_content_type: application/octet-stream
+        run: |
+          $release = gh release view v${{ needs.release.outputs.version }} --json uploadUrl,url -q '.'
+          $upload_url = $release | ConvertFrom-Json | Select-Object -ExpandProperty uploadUrl
+          gh release upload v${{ needs.release.outputs.version }} src-tauri/target/release/kagamicraftlauncher.exe --clobber
