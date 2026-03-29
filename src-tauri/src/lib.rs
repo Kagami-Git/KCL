@@ -231,9 +231,39 @@ fn create_client() -> Client {
 }
 
 fn get_client_id() -> String {
-    std::env::var("MS_CLIENT_ID").unwrap_or_else(|_| {
-        "00000000-0000-0000-0000-000000000000".to_string()
-    })
+    if let Ok(id) = std::env::var("MS_CLIENT_ID") {
+        if !id.is_empty() {
+            return id;
+        }
+    }
+
+    let exe_dir = std::env::current_exe()
+        .map(|p| p.parent().unwrap_or_else(|| Path::new("")).to_path_buf())
+        .unwrap_or_else(|_| PathBuf::from("."));
+
+    let dot_dev = exe_dir.join(".env.dev");
+    if dot_dev.exists() {
+        if let Ok(content) = std::fs::read_to_string(&dot_dev) {
+            for line in content.lines() {
+                if let Some(value) = line.strip_prefix("MS_CLIENT_ID=") {
+                    return value.trim().to_string();
+                }
+            }
+        }
+    }
+
+    let dot_env = exe_dir.join(".env");
+    if dot_env.exists() {
+        if let Ok(content) = std::fs::read_to_string(&dot_env) {
+            for line in content.lines() {
+                if let Some(value) = line.strip_prefix("MS_CLIENT_ID=") {
+                    return value.trim().to_string();
+                }
+            }
+        }
+    }
+
+    "00000000-0000-0000-0000-000000000000".to_string()
 }
 
 fn get_kcl_dir() -> Result<PathBuf, String> {
